@@ -1,0 +1,204 @@
+---
+title: "MINI PROJECT"
+author: "Kwabena Asabere"
+df-print: kable
+execute: 
+  echo: true
+  warning: false
+  message: false
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## 
+
+```{r}
+library(tidyverse)
+library(broom)
+library(finalfit)
+library(gtsummary)
+library(haven)
+library(janitor)
+library(GGally)
+
+```
+
+```{r}
+df <- read_dta("project_b.dta")
+head(df)
+glimpse(df)
+```
+
+```{r}
+missing_glimpse(df)
+```
+
+```{r}
+ggpairs(df)
+```
+
+```{r}
+table(df$cesd23)
+```
+
+```{r}
+df <- df %>%
+  mutate(cesd23 = factor(cesd23, levels = c(0, 1)))
+```
+
+```{r}
+unadjusted_models <- df %>%
+  select(-c(idno, cesd23,cesdtot)) %>%  
+  names() %>%
+  map_dfr(~ {
+    model <- glm(reformulate(.x, response = "cesd23"), data = df, family = binomial)
+    tbl_regression(model, exponentiate = TRUE) %>%  
+      as_tibble()  
+  }, .id = "Variable")
+```
+
+```{r}
+unadjusted_models
+```
+
+```{r}
+glimpse(df)
+```
+
+```{r}
+df <- df %>% na.omit()
+```
+
+```{r}
+model_log <- df %>%  
+  glm(cesd23 ~ hiv + age + m0f1 + inject + alcyn + symp5ge2, family = binomial, data = .)
+```
+
+```{r}
+tidy(model_log)
+```
+
+```{r}
+preds = predict(model_log,type = "response")
+```
+
+```{r}
+
+```
+
+```{r}
+df_mod <- df %>% 
+  mutate(
+    predicted_probs = preds,
+    bin = cut(predicted_probs,breaks = seq(0,1, by = 0.1),include.lowest = TRUE)
+  )
+```
+
+```{r}
+calibration_summary <- df_mod %>%
+  mutate(cesd23 = as.numeric(cesd23)) %>% 
+  group_by(bin) %>%
+  summarise(
+    mean_predicted = mean(predicted_probs),
+    mean_observed = mean(cesd23) 
+  ) %>% 
+   mutate(mean_observed = mean_observed / max(mean_observed)) %>% 
+  drop_na()
+```
+
+```{r}
+calibration_summary
+
+
+```
+
+```         
+```
+
+```{r}
+ggplot(calibration_summary, aes(x = mean_predicted, y = mean_observed)) +
+  geom_point(color = "blue") +
+  geom_line(aes(y = mean_predicted), linetype = "dashed", color = "red") +  
+  labs(
+    title = "Calibration Plot",
+    x = "Mean Predicted Probability",
+    y = "Observed Proportion"
+  ) +
+  theme_bw()
+
+```
+
+```{r}
+ df_tab <- df %>% 
+  mutate(
+    hiv = if_else(hiv == 0,"Uninfected","Infected") %>% 
+      fct_relevel("Uninfected") %>% 
+      ff_label("HIV Infection"),
+    age = age %>% 
+      ff_label("Age (in years)"),
+    Sex = if_else(m0f1==0,"Male","Female"),
+    cesdtot = cesdtot %>% ff_label("CES-D Total Score"),
+    cesd23 = if_else(cesd23 ==1,"23 or higher", "Less than 23") %>% 
+      fct_relevel("Less than 23") %>% 
+      ff_label("CES-D Score"),
+   
+     inject = if_else(inject == 1,"Yes","No") %>% 
+      ff_label("Self-injection"),
+    
+    injher = if_else(injher == 1,"Yes","No") %>% 
+      ff_label("Heroin self-injection"),
+    injcoc = if_else(injcoc ==1,"Yes","No") %>% 
+      ff_label("Cocaine self-injection"),
+    
+    alcyn = if_else(alcyn == 1,"Yes","No") %>% 
+      ff_label("Alcohol use"),
+    
+    symp5ge2 = if_else(symp5ge2 ==1,"None or 1 sympton","2 or more symptons") %>% 
+      ff_label("HIV-related symptons"),
+    
+    gnhlthst = case_when(
+                      gnhlthst== 1 ~ "Excellent",
+                        gnhlthst==  2 ~ "Very good",
+                        gnhlthst== 3 ~ "Good",
+                        gnhlthst==  4 ~ "Fair",
+                         gnhlthst== 5 ~ "Poor") %>% 
+      fct_relevel("Poor","Fair","Good","Very good","Excellent") %>% 
+      ff_label("Self-reported health status")
+    
+  )
+```
+
+```{r}
+table1 <- df_tab %>% select(-c(idno,aged10,m0f1)) %>% 
+  select(age,Sex,everything()) %>% 
+  tbl_summary(
+    by = cesd23,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})", 
+      all_categorical() ~ "{n} ({p}%)"  
+    ),
+    missing = "no"  
+  )
+  
+```
+
+```{r}
+
+  
+```
+
+```{r}
+table1 <- table1 %>%
+  add_overall() %>% 
+  modify_header(label = "**Variable**") %>%  
+     modify_spanning_header(
+    all_stat_cols() ~ "**CES-D Score**"  
+  ) %>% 
+  bold_labels() %>% 
+  italicize_levels()
+
+table1
+
+```
