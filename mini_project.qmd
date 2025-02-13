@@ -22,6 +22,10 @@ library(gtsummary)
 library(haven)
 library(janitor)
 library(GGally)
+library(pROC)
+library(tidymodels)
+library(ggcorrplot)
+library(ResourceSelection)
 
 ```
 
@@ -31,104 +35,7 @@ head(df)
 glimpse(df)
 ```
 
-```{r}
-missing_glimpse(df)
-```
-
-```{r}
-ggpairs(df)
-```
-
-```{r}
-table(df$cesd23)
-```
-
-```{r}
-df <- df %>%
-  mutate(cesd23 = factor(cesd23, levels = c(0, 1)))
-```
-
-```{r}
-unadjusted_models <- df %>%
-  select(-c(idno, cesd23,cesdtot)) %>%  
-  names() %>%
-  map_dfr(~ {
-    model <- glm(reformulate(.x, response = "cesd23"), data = df, family = binomial)
-    tbl_regression(model, exponentiate = TRUE) %>%  
-      as_tibble()  
-  }, .id = "Variable")
-```
-
-```{r}
-unadjusted_models
-```
-
-```{r}
-glimpse(df)
-```
-
-```{r}
-df <- df %>% na.omit()
-```
-
-```{r}
-model_log <- df %>%  
-  glm(cesd23 ~ hiv + age + m0f1 + inject + alcyn + symp5ge2, family = binomial, data = .)
-```
-
-```{r}
-tidy(model_log)
-```
-
-```{r}
-preds = predict(model_log,type = "response")
-```
-
-```{r}
-
-```
-
-```{r}
-df_mod <- df %>% 
-  mutate(
-    predicted_probs = preds,
-    bin = cut(predicted_probs,breaks = seq(0,1, by = 0.1),include.lowest = TRUE)
-  )
-```
-
-```{r}
-calibration_summary <- df_mod %>%
-  mutate(cesd23 = as.numeric(cesd23)) %>% 
-  group_by(bin) %>%
-  summarise(
-    mean_predicted = mean(predicted_probs),
-    mean_observed = mean(cesd23) 
-  ) %>% 
-   mutate(mean_observed = mean_observed / max(mean_observed)) %>% 
-  drop_na()
-```
-
-```{r}
-calibration_summary
-
-
-```
-
-```         
-```
-
-```{r}
-ggplot(calibration_summary, aes(x = mean_predicted, y = mean_observed)) +
-  geom_point(color = "blue") +
-  geom_line(aes(y = mean_predicted), linetype = "dashed", color = "red") +  
-  labs(
-    title = "Calibration Plot",
-    x = "Mean Predicted Probability",
-    y = "Observed Proportion"
-  ) +
-  theme_bw()
-
-```
+### Table One
 
 ```{r}
  df_tab <- df %>% 
@@ -180,25 +87,622 @@ table1 <- df_tab %>% select(-c(idno,aged10,m0f1)) %>%
       all_categorical() ~ "{n} ({p}%)"  
     ),
     missing = "no"  
-  )
-  
-```
-
-```{r}
-
-  
-```
-
-```{r}
-table1 <- table1 %>%
-  add_overall() %>% 
-  modify_header(label = "**Variable**") %>%  
-     modify_spanning_header(
-    all_stat_cols() ~ "**CES-D Score**"  
   ) %>% 
+  add_overall() %>%  
+  modify_spanning_header(
+    all_stat_cols() ~ "**CES-D Score**"  
+  ) %>%
+  modify_header(label = "**Variable**") %>%  
+  bold_labels() %>%
+  italicize_levels()
+  
+table1
+```
+
+```{r}
+missing_glimpse(df)
+```
+
+### Correlation Heatmap
+
+```{r}
+df_numeric <- df %>% select(where(is.numeric))  
+cor_matrix <- cor(df_numeric)  
+
+ggcorrplot(cor_matrix, 
+           method = "circle",  
+           type = "lower",  # Only show the lower triangle
+           lab = TRUE,  # Display correlation values
+           ggtheme = theme_minimal(), 
+           colors = c("blue", "white", "red")) 
+```
+
+```{r}
+# Convert matrix to long format for ggplot2
+cor_df <- cor_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Variable1") %>%
+  pivot_longer(-Variable1, names_to = "Variable2", values_to = "Correlation")
+```
+
+```{r}
+heatmap <- ggplot(cor_df, aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile() +  # Heatmap tiles
+  geom_text(aes(label = round(Correlation, 2)), color = "black", size = 3) + 
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +  # Color scale
+  theme_minimal() +
+  labs(title = "Correlation Matrix Heatmap",
+       fill = "Correlation") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+```
+
+```{r}
+table(df$cesd23)
+```
+
+```{r}
+df <- df %>% na.omit() %>% 
+  mutate(cesd23 = factor(cesd23, levels = c(0, 1)))
+```
+
+```{r}
+set.seed(123)
+data_split <- initial_split(df,prop = 0.75,strata = cesd23)
+# Create training and testing sets
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+```
+
+```{r}
+# Check distribution in train/test
+table(train_data$cesd23)  
+table(test_data$cesd23)  
+```
+
+#### Univariate Models
+
+```{r}
+df_tab %>%
+  select(-c(idno,cesdtot,aged10,m0f1)) %>% 
+tbl_uvregression(
+  method = glm,
+  y = cesd23,
+  method.args = list(family = binomial),
+  exponentiate = TRUE  
+) %>%
+  bold_p()  %>% 
   bold_labels() %>% 
   italicize_levels()
+```
 
-table1
+```{r}
+unadjusted_models <- df %>%
+  select(-c(idno, cesd23,cesdtot)) %>%  
+  names() %>%
+  map_dfr(~ {
+    model <- glm(reformulate(.x, response = "cesd23"), data = df, family = binomial)
+    tbl_regression(model, exponentiate = TRUE) %>%  
+      as_tibble()  
+  }, .id = "Variable")
+```
 
+```{r}
+unadjusted_models
+```
+
+```{r}
+
+df %>%
+  select(-c(idno, cesd23, cesdtot)) %>%  
+  names() %>%
+  map_dfr(~ {
+    model <- glm(reformulate(.x, response = "cesd23"), data = df, family = binomial)
+    
+    tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%  # Extract model coefficients and p-values
+      filter(term == .x) %>%  # Keep only the predictor term (exclude intercept)
+      select(variable = term, odds_ratio = estimate,conf.low, conf.high, p.value)
+      
+  })
+
+```
+
+### Multivariable Models
+
+### Model 1
+
+```{r}
+model_1 <- train_data %>%  
+  glm(cesd23 ~ hiv + age + m0f1 + inject + alcyn + symp5ge2, family = binomial, data = .)
+```
+
+```{r}
+tidy(model_1,conf.int = TRUE,exponentiate = TRUE)
+```
+
+### Calibration and ROC Plots
+
+```{r}
+preds = predict(model_1,type = "response")
+```
+
+```{r}
+model1_df <- train_data %>% 
+  mutate(
+    predicted_probs = preds,
+    bin = cut(predicted_probs,breaks = seq(0,1, by = 0.1),include.lowest = TRUE)
+  )
+```
+
+```{r}
+model1_calibration <- model1_df %>%
+  mutate(cesd23 = as.numeric(cesd23)) %>% 
+  group_by(bin) %>%
+  summarise(
+    mean_predicted = mean(predicted_probs),
+    mean_observed = mean(cesd23) 
+  ) %>% 
+   mutate(mean_observed = mean_observed / max(mean_observed)) %>% 
+  drop_na()
+```
+
+```{r}
+model1_calibration
+
+
+```
+
+#### Calibration Plot
+
+```{r}
+ggplot(model1_calibration, aes(x = mean_predicted, y = mean_observed)) +
+  geom_point(color = "blue",size = 3) +
+ geom_abline(slope = 1, intercept = 0,linetype = "dashed", color = "red", linewidth = 1 )+
+  scale_x_continuous(limits = c(0, 1)) + 
+  scale_y_continuous(limits = c(0, 1)) +  
+  coord_fixed()+
+  labs(
+    title = "Calibration Plot",
+    x = "Predicted Risk",
+    y = "Observed Risk"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+```
+
+```{r}
+ model1_roc <- model1_df %>% 
+  select(cesd23,predicted_probs,bin)
+```
+
+```{r}
+model1_roc_obj <- roc(model1_roc$cesd23,model1_roc$predicted_probs)
+model1_roc_df <- data.frame(
+  TPR = rev(model1_roc_obj$sensitivities),  # Sensitivity = TPR
+  FPR = rev(1 - model1_roc_obj$specificities)  # 1 - Specificity = FPR
+)
+```
+
+#### ROC Curve
+
+```{r}
+auc_value <- round(auc(model1_roc_obj), 3)
+ggplot(model1_roc_df, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue", linewidth = 1) +  
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") + 
+  annotate("text", x = 0.5, y = 0.3, label = paste("AUC =", auc_value), 
+           size = 6, fontface = "bold", color = "black")+
+  labs(
+    title = "ROC Curve for Predicting CES > 23",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+
+```
+
+```{r}
+ plot(model1_roc_obj, 
+     main = "ROC Curve for Predicting CES > 23",
+     print.auc=TRUE, 
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0)
+)
+```
+
+```{r}
+model1_df$cesd23 <- as.numeric(as.character(model1_df$cesd23))
+
+model1_hl_test <- hoslem.test(model1_df$cesd23, model1_df$predicted_probs, g= 10)
+
+print(model1_hl_test)
+```
+
+## Model 2
+
+
+
+```{r}
+model2 <- train_data %>% 
+  glm(cesd23 ~ hiv + m0f1 + inject + alcyn, family=binomial(link="logit"),data = .)
+```
+
+```{r}
+# model summary
+tidy(model2,conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+# extracting model's predicted probabilities
+model2_preds = predict(model2,type = "response")
+
+```
+
+```{r}
+# creating a new data frame with predicted probabilities and a column with
+# the predicted probabilities divided into 10 bins
+
+model2_df = train_data %>% 
+  mutate(
+    predicted_probs = model2_preds,
+    bin = cut(predicted_probs, breaks = seq(0,1, by = 0.1),include.lowest = TRUE)
+  )
+
+
+```
+
+```{r}
+# creating a dataframe for the calibration plot
+# calculated obsrved proportion in each bin and predicted proportion in each bin
+
+model2_calibration = model2_df %>% 
+  mutate(cesd23 = as.numeric(cesd23)) %>% 
+  group_by(bin) %>% 
+  summarise(
+    mean_predicted = mean(predicted_probs),
+    mean_observed = mean(cesd23)
+  ) %>% 
+  mutate(mean_observed = mean_observed/max(mean_observed)) 
+
+model2_calibration
+
+```
+
+#### Calibration Plot for Model 2
+
+```{r}
+ggplot(model2_calibration, aes(x = mean_predicted, y = mean_observed)) +
+  geom_point(color = "blue",size = 3) +
+ geom_abline(slope = 1, intercept = 0,linetype = "dashed", color = "red", linewidth = 1 )+
+  scale_x_continuous(limits = c(0, 1)) + 
+  scale_y_continuous(limits = c(0, 1)) +  
+  coord_fixed()+
+  labs(
+    title = "Calibration Plot",
+    x = "Predicted Risk",
+    y = "Observed Risk"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+```
+
+### Model 2 ROC Plot
+
+```{r}
+## create the roc object
+
+model2_roc_obj = roc(model2_df$cesd23, model2_df$predicted_probs)
+```
+
+```{r}
+# create a new dataframe with the variables needed for the ROC Plot
+
+model2_roc_df <- data.frame(
+  Sensitivity = rev(model2_roc_obj$sensitivities),
+    Specificity = rev(model2_roc_obj$specificities)
+)
+
+
+
+```
+
+```{r}
+
+auc_value <- round(auc(model2_roc_obj), 3) # calculate the C-statistic
+
+ggplot(model2_roc_df, aes(x = Specificity, y = Sensitivity)) +
+  geom_line(color = "blue", linewidth = 1) +  
+  geom_abline(slope = -1, intercept = 1, linetype = "dashed", color = "red") + 
+  annotate("text", x = 0.5, y = 0.3, label = paste("AUC =", auc_value), 
+           size = 6, fontface = "bold", color = "black")+
+  labs(
+    title = "ROC Curve for Predicting CES > 23",
+    x = "Specificity",
+    y = "Sensitivity"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+```
+
+```{r}
+ plot(model2_roc_obj, 
+     main = "ROC Curve for Predicting CES > 23",
+     print.auc=TRUE, 
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0)
+)
+```
+
+#### Hosmer-Lemeshow Test
+
+```{r}
+model2_df$cesd23 <- as.numeric(as.character(model2_df$cesd23))
+
+model2_hl_test <- hoslem.test(model2_df$cesd23, model2_df$predicted_probs, g= 5)
+
+print(model2_hl_test)
+```
+
+## Model 3
+
+
+
+```{r}
+model3 <- train_data %>% 
+  glm(cesd23 ~ hiv + m0f1 + inject + alcyn + symp5ge2 + gnhlthst, family=binomial(link="logit"),data = .)
+```
+
+```{r}
+# model3 summary
+tidy(model3, conf.int = TRUE, exponentiate = TRUE)
+```
+
+```{r}
+# extracting model's predicted probabilities
+model3_preds = predict(model3,type = "response")
+```
+
+```{r}
+# creating a new data frame with predicted probabilities and a column with
+# the predicted probabilities divided into 10 bins
+
+model3_df = train_data %>% 
+  mutate(
+    predicted_probs = model3_preds,
+    bin = cut(predicted_probs, breaks = seq(0,1, by = 0.1),include.lowest = TRUE)
+  )
+
+```
+
+### Calibration plot for model 3
+
+```{r}
+
+# creating a dataframe for the calibration plot
+# calculated obsrved proportion in each bin and predicted proportion in each bin
+
+model3_calibration = model3_df %>% 
+  mutate(cesd23 = as.numeric(cesd23)) %>% 
+  group_by(bin) %>% 
+  summarise(
+    mean_predicted = mean(predicted_probs),
+    mean_observed = mean(cesd23)
+  ) %>% 
+  mutate(mean_observed = mean_observed/max(mean_observed)) 
+
+
+```
+
+```{r}
+
+ggplot(model3_calibration, aes(x = mean_predicted, y = mean_observed)) +
+  geom_point(color = "blue",size = 3) +
+ geom_abline(slope = 1, intercept = 0,linetype = "dashed", color = "red", linewidth = 1 )+
+  scale_x_continuous(limits = c(0, 1)) + 
+  scale_y_continuous(limits = c(0, 1)) +  
+  coord_fixed()+
+  labs(
+    title = "Calibration Plot",
+    x = "Predicted Risk",
+    y = "Observed Risk"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+
+```
+
+### Model 3 ROC Plot
+
+```{r}
+## create the roc object
+
+model3_roc_obj = roc(model3_df$cesd23, model3_df$predicted_probs)
+```
+
+```{r}
+# create a new dataframe with the variables needed for the ROC Plot
+
+model3_roc_df <- data.frame(
+  Sensitivity = rev(model3_roc_obj$sensitivities),
+    Specificity = rev(model3_roc_obj$specificities)
+)
+
+
+```
+
+```{r}
+auc_value <- round(auc(model3_roc_obj), 3) # calculate the C-statistic
+
+ggplot(model3_roc_df, aes(x = Specificity, y = Sensitivity)) +
+  geom_line(color = "blue", linewidth = 1) +  
+  geom_abline(slope = -1, intercept = 1, linetype = "dashed", color = "red") + 
+  annotate("text", x = 0.5, y = 0.3, label = paste("AUC =", auc_value), 
+           size = 6, fontface = "bold", color = "black")+
+  labs(
+    title = "ROC Curve for Predicting CES > 23",
+    x = "Specificity",
+    y = "Sensitivity"
+  ) +
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
+```
+
+```{r}
+plot(model3_roc_obj, 
+     main = "ROC Curve for Predicting CES > 23",
+     print.auc=TRUE, 
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0)
+)
+```
+
+### Hosmer-Lemeshow Test
+
+```{r}
+model3_df$cesd23 <- as.numeric(as.character(model3_df$cesd23))
+
+model3_hl_test <- hoslem.test(model3_df$cesd23, model3_df$predicted_probs, g= 10)
+
+print(model3_hl_test)
+```
+
+### Comparing Models 
+
+```{r}
+#compare AUC
+roc.test(model1_roc_obj, model2_roc_obj)
+
+roc.test(model2_roc_obj, model3_roc_obj)
+
+roc.test(model1_roc_obj,model3_roc_obj)
+```
+
+### Assessing Models on Test Set
+
+### Model 3
+
+```{r}
+model3_test_probs <- predict(model3, test_data, type = "response")
+model3_test_roc_obj <- roc(response = test_data$cesd23, predictor = model3_test_probs)
+
+```
+
+```{r}
+plot(model3_test_roc_obj, 
+     main = "Model 3 ROC Curve for Test Set",
+     print.auc=TRUE, 
+     ci.type="bars",
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0),
+     print.thres="best", 
+     print.thres.best.method="youden",
+     print.auc.x = 1,
+     print.auc.y = 0.9,
+)
+```
+
+### Model 1
+
+```{r}
+
+model1_test_probs <- predict(model_1, test_data, type = "response")
+model1_test_roc_obj <- roc(response = test_data$cesd23, predictor = model1_test_probs)
+
+```
+
+```{r}
+plot(model1_test_roc_obj, 
+     main = "Model 1 ROC Curve for Test Set",
+     print.auc=TRUE, 
+     ci.type="bars",
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0),
+     print.thres="best", 
+     print.thres.best.method="youden",
+     print.auc.x = 1,
+     print.auc.y = 0.9,
+)
+```
+
+### Model 2
+
+```{r}
+model2_test_probs <- predict(model2, test_data, type = "response")
+model2_test_roc_obj <- roc(response = test_data$cesd23, predictor = model2_test_probs)
+```
+
+```{r}
+plot(model2_test_roc_obj, 
+     main = "Model 2 ROC Curve for Test Set",
+     print.auc=TRUE, 
+     ci.type="bars",
+     grid=TRUE,
+     legacy.axes=FALSE, 
+     xlim=c(1,0),
+     print.thres="best", 
+     print.thres.best.method="youden",
+     print.auc.x = 1,
+     print.auc.y = 0.9,
+)
+```
+
+### Combined ROC Plots on  Training & Test Data for Model 3
+
+```{r}
+
+model3_roc_train_df <- data.frame(
+ Sensitivity = rev(model3_roc_obj$sensitivities),
+    Specificity = rev(model3_roc_obj$specificities),
+ Label = "Training Data"
+)
+
+model3_roc_test_df <- data.frame(
+  Sensitivity = rev(model3_test_roc_obj$sensitivities),
+  Specificity = rev(model3_test_roc_obj$specificities),
+  Label = "Test Data"
+) 
+
+# combine into one dataframe
+roc_df <- rbind(model3_roc_train_df, model3_roc_test_df)
+
+# calculate the C-statistic
+auc_value_train <- round(auc(model3_roc_obj), 3)
+auc_value_test <-  round(auc(model3_test_roc_obj),3) # calculate the C-statistic
+```
+
+```{r}
+ggplot(roc_df, aes(x = Specificity, y = Sensitivity, color = Label)) +
+  geom_line(size = 1) +  
+  geom_abline(slope = -1, intercept = 1, linetype = "dashed", color = "red") + 
+  labs(
+    title = "ROC Curve for Predicting CES > 23",
+    x = "Specificity",
+    y = "Sensitivity",
+    color = "Dataset"  
+  ) +
+  scale_color_manual(values = c("Training Data" = "blue", "Test Data" = "black")) +  
+  theme_bw()+
+  annotate("text", x = 0.2, y = 0.3, label = paste("AUC (Train):", auc_value_train), color = "blue", fontface = "bold", size = 5) +  
+  annotate("text", x = 0.2, y = 0.2, label = paste("AUC (Test):", auc_value_test), color = "black", fontface = "bold", size = 5) +  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)  
+  )
 ```
